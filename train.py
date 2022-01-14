@@ -5,6 +5,7 @@ import os
 import shutil
 import time
 
+import cv2
 import torch
 import torch.nn as nn
 import torch.nn.parallel
@@ -22,6 +23,9 @@ import numpy as np
 
 import warnings
 
+from PIL import Image
+from torch.utils.data import DataLoader, Dataset
+
 warnings.filterwarnings("ignore")
 
 model_names = sorted(name for name in models.__dict__
@@ -29,13 +33,13 @@ model_names = sorted(name for name in models.__dict__
                      and callable(models.__dict__[name]))
 
 parser = argparse.ArgumentParser(description='Cutmix PyTorch CIFAR-10, CIFAR-100 and ImageNet-1k Training')
-parser.add_argument('--net_type', default='pyramidnet', type=str,
+parser.add_argument('--net_type', default='resnet', type=str,
                     help='networktype: resnet, and pyamidnet')
 parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
                     help='number of data loading workers (default: 4)')
 parser.add_argument('--epochs', default=90, type=int, metavar='N',
                     help='number of total epochs to run')
-parser.add_argument('-b', '--batch_size', default=128, type=int,
+parser.add_argument('-b', '--batch_size', default=600, type=int,
                     metavar='N', help='mini-batch size (default: 256)')
 parser.add_argument('--lr', '--learning-rate', default=0.1, type=float,
                     metavar='LR', help='initial learning rate')
@@ -45,11 +49,11 @@ parser.add_argument('--weight-decay', '--wd', default=1e-4, type=float,
                     metavar='W', help='weight decay (default: 1e-4)')
 parser.add_argument('--print-freq', '-p', default=1, type=int,
                     metavar='N', help='print frequency (default: 10)')
-parser.add_argument('--depth', default=32, type=int,
+parser.add_argument('--depth', default=18, type=int,
                     help='depth of the network (default: 32)')
 parser.add_argument('--no-bottleneck', dest='bottleneck', action='store_false',
                     help='to use basicblock for CIFAR datasets (default: bottleneck)')
-parser.add_argument('--dataset', dest='dataset', default='imagenet', type=str,
+parser.add_argument('--dataset', dest='dataset', default='LSD', type=str,
                     help='dataset (options: cifar10, cifar100, and imagenet)')
 parser.add_argument('--no-verbose', dest='verbose', action='store_false',
                     help='to print the status at every iteration')
@@ -59,7 +63,7 @@ parser.add_argument('--expname', default='TEST', type=str,
                     help='name of experiment')
 parser.add_argument('--beta', default=0, type=float,
                     help='hyperparameter beta')
-parser.add_argument('--cutmix_prob', default=0, type=float,
+parser.add_argument('--cutmix_prob', default=0.5, type=float,
                     help='cutmix probability')
 
 parser.set_defaults(bottleneck=True)
@@ -68,6 +72,32 @@ parser.set_defaults(verbose=True)
 best_err1 = 100
 best_err5 = 100
 
+class MyDataset(Dataset):
+    def __init__(self, root, datatxt, transform=None):
+        super(MyDataset, self).__init__()
+        fh = open(root+datatxt,'r')
+        imgs = []
+        for line in fh:
+            line = line.rstrip()
+            words = line.split('\t')
+            imgs.append((words[0], int(words[1])))
+        self.imgs = imgs
+        self.transform = transform
+
+    def __getitem__(self ,index):
+        fn,label = self.imgs[index]
+        #img = Image.open(root+fn)
+        img = cv2.imread(fn)
+        #print(fn)
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        PIL_IMG=Image.fromarray(img)
+        if self.transform is not None:
+            img = self.transform(PIL_IMG)
+        #img = img.transpose(2, 0, 1)
+        return img,label
+
+    def __len__(self):
+        return len(self.imgs)
 
 def main():
     global args, best_err1, best_err5
@@ -150,12 +180,32 @@ def main():
             num_workers=args.workers, pin_memory=True)
         numberofclass = 1000
 
+    elif args.dataset == 'LSD':
+        transform_train = transforms.Compose([
+            transforms.Resize((256,256)),
+            transforms.RandomHorizontalFlip(0.5),
+            transforms.RandomVerticalFlip(0.5),
+            transforms.RandomCrop((224,224)),
+            transforms.ToTensor(),
+            #transforms.Normalize(mean=[0.0],
+             #                    std=[0.3922])
+        ])
+        transform_test = transforms.Compose([
+            transforms.Resize((224,224)),
+            transforms.ToTensor(),#(H,W,C)转换为（C,H,W）,取值范围是0-1
+            #transforms.Normalize(mean=[0.0],
+            #                     std=[0.3922])
+        ])
+        trainset = MyDataset(root='G:/DataSet/LSD/', datatxt='train.txt',transform=transform_train)
+        train_loader = DataLoader(trainset, batch_size=256, shuffle=True)
+        testset = MyDataset(root='G:/DataSet/LSD/', datatxt='val.txt', transform=transform_test)
+        val_loader = DataLoader(testset, batch_size=256, shuffle=True)
     else:
         raise Exception('unknown dataset: {}'.format(args.dataset))
 
     print("=> creating model '{}'".format(args.net_type))
     if args.net_type == 'resnet':
-        model = RN.ResNet(args.dataset, args.depth, numberofclass, args.bottleneck)  # for ResNet
+        model = RN.ResNet('imagenet', 18, 2, args.bottleneck)  # for ResNet
     elif args.net_type == 'pyramidnet':
         model = PYRM.PyramidNet(args.dataset, args.depth, args.alpha, numberofclass,
                                 args.bottleneck)
@@ -244,7 +294,7 @@ def train(train_loader, model, criterion, optimizer, epoch):
             loss = criterion(output, target)
 
         # measure accuracy and record loss
-        err1, err5 = accuracy(output.data, target, topk=(1, 5))
+        err1, err5 = accuracy(output.data, target, topk=(1, 1))
 
         losses.update(loss.item(), input.size(0))
         top1.update(err1.item(), input.size(0))
@@ -312,7 +362,7 @@ def validate(val_loader, model, criterion, epoch):
         loss = criterion(output, target)
 
         # measure accuracy and record loss
-        err1, err5 = accuracy(output.data, target, topk=(1, 5))
+        err1, err5 = accuracy(output.data, target, topk=(1, 1))
 
         losses.update(loss.item(), input.size(0))
 
@@ -370,7 +420,7 @@ def adjust_learning_rate(optimizer, epoch):
     """Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
     if args.dataset.startswith('cifar'):
         lr = args.lr * (0.1 ** (epoch // (args.epochs * 0.5))) * (0.1 ** (epoch // (args.epochs * 0.75)))
-    elif args.dataset == ('imagenet'):
+    else :
         if args.epochs == 300:
             lr = args.lr * (0.1 ** (epoch // 75))
         else:
