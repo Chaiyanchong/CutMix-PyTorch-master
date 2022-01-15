@@ -25,6 +25,12 @@ import warnings
 
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset
+from models.experimental import attempt_load
+from models.yolo import Model
+from utils.general import (LOGGER, NCOLS, check_dataset, check_file, check_git_status, check_img_size,
+                           check_requirements, check_suffix, check_yaml, colorstr, get_latest_run, increment_path,
+                           init_seeds, intersect_dicts, labels_to_class_weights, labels_to_image_weights, methods,
+                           one_cycle, print_args, print_mutation, strip_optimizer)
 
 warnings.filterwarnings("ignore")
 
@@ -33,7 +39,7 @@ model_names = sorted(name for name in models.__dict__
                      and callable(models.__dict__[name]))
 
 parser = argparse.ArgumentParser(description='Cutmix PyTorch CIFAR-10, CIFAR-100 and ImageNet-1k Training')
-parser.add_argument('--net_type', default='resnet', type=str,
+parser.add_argument('--net_type', default='yolov5n', type=str,
                     help='networktype: resnet, and pyamidnet')
 parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
                     help='number of data loading workers (default: 4)')
@@ -61,7 +67,7 @@ parser.add_argument('--alpha', default=300, type=float,
                     help='number of new channel increases per depth (default: 300)')
 parser.add_argument('--expname', default='TEST', type=str,
                     help='name of experiment')
-parser.add_argument('--beta', default=0, type=float,
+parser.add_argument('--beta', default=0.3, type=float,
                     help='hyperparameter beta')
 parser.add_argument('--cutmix_prob', default=0.5, type=float,
                     help='cutmix probability')
@@ -209,6 +215,15 @@ def main():
     elif args.net_type == 'pyramidnet':
         model = PYRM.PyramidNet(args.dataset, args.depth, args.alpha, numberofclass,
                                 args.bottleneck)
+    elif args.net_type == 'yolov5n':
+        cfg = 'E:/DLPROJTCT/CutMix-PyTorch-master/models/yolov5n_class.yaml'
+        weights='E:/DLPROJTCT/CutMix-PyTorch-master/yolov5n.pt'
+        model = Model(cfg, ch=1, nc=2)
+        ckpt = torch.load(weights)  # load checkpoint
+        exclude = ['anchor']
+        csd = ckpt['model'].float().state_dict()  # checkpoint state_dict as FP32
+        csd = intersect_dicts(csd, model.state_dict(), exclude=exclude)  # intersect
+        model.load_state_dict(csd, strict=False)  # load
     else:
         raise Exception('unknown network architecture: {}'.format(args.net_type))
 
