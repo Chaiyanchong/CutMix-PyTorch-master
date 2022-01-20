@@ -4,6 +4,7 @@ import argparse
 import os
 import shutil
 import time
+import cv2
 
 import torch
 import torch.nn as nn
@@ -20,6 +21,16 @@ import pyramidnet as PYRM
 
 import warnings
 
+from PIL import Image
+from torch.utils.data import DataLoader, Dataset
+from models.experimental import attempt_load
+from models.yolo import Model
+from utils.general import (LOGGER, NCOLS, check_dataset, check_file, check_git_status, check_img_size,
+                           check_requirements, check_suffix, check_yaml, colorstr, get_latest_run, increment_path,
+                           init_seeds, intersect_dicts, labels_to_class_weights, labels_to_image_weights, methods,
+                           one_cycle, print_args, print_mutation, strip_optimizer)
+
+
 warnings.filterwarnings("ignore")
 
 model_names = sorted(name for name in models.__dict__
@@ -27,7 +38,7 @@ model_names = sorted(name for name in models.__dict__
                      and callable(models.__dict__[name]))
 
 parser = argparse.ArgumentParser(description='Cutmix PyTorch CIFAR-10, CIFAR-100 and ImageNet-1k Test')
-parser.add_argument('--net_type', default='pyramidnet', type=str,
+parser.add_argument('--net_type', default='yolov5n', type=str,
                     help='networktype: resnet, and pyamidnet')
 parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
                     help='number of data loading workers (default: 4)')
@@ -41,19 +52,46 @@ parser.add_argument('--depth', default=32, type=int,
                     help='depth of the network (default: 32)')
 parser.add_argument('--no-bottleneck', dest='bottleneck', action='store_false',
                     help='to use basicblock for CIFAR datasets (default: bottleneck)')
-parser.add_argument('--dataset', dest='dataset', default='imagenet', type=str,
+parser.add_argument('--dataset', dest='dataset', default='LSD', type=str,
                     help='dataset (options: cifar10, cifar100, and imagenet)')
 parser.add_argument('--alpha', default=300, type=float,
                     help='number of new channel increases per depth (default: 300)')
 parser.add_argument('--no-verbose', dest='verbose', action='store_false',
                     help='to print the status at every iteration')
-parser.add_argument('--pretrained', default='/set/your/model/path', type=str, metavar='PATH')
+parser.add_argument('--pretrained', default='E:/DLPROJTCT/CutMix-PyTorch-master/runs/TEST/model_best.pth.tar', type=str, metavar='PATH')
 
 parser.set_defaults(bottleneck=True)
 parser.set_defaults(verbose=True)
 
 best_err1 = 100
 best_err5 = 100
+
+class MyDataset(Dataset):
+    def __init__(self, root, datatxt, transform=None):
+        super(MyDataset, self).__init__()
+        fh = open(root+datatxt,'r')
+        imgs = []
+        for line in fh:
+            line = line.rstrip()
+            words = line.split('\t')
+            imgs.append((words[0], int(words[1])))
+        self.imgs = imgs
+        self.transform = transform
+
+    def __getitem__(self ,index):
+        fn,label = self.imgs[index]
+        #img = Image.open(root+fn)
+        img = cv2.imread(fn)
+        #print(fn)
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        PIL_IMG=Image.fromarray(img)
+        if self.transform is not None:
+            img = self.transform(PIL_IMG)
+        #img = img.transpose(2, 0, 1)
+        return img,label,fn
+
+    def __len__(self):
+        return len(self.imgs)
 
 
 def main():
@@ -106,6 +144,28 @@ def main():
             num_workers=args.workers, pin_memory=True)
         numberofclass = 1000
 
+    elif args.dataset == 'LSD':
+        transform_train = transforms.Compose([
+            transforms.Resize((256,256)),
+            transforms.RandomHorizontalFlip(0.5),
+            transforms.RandomVerticalFlip(0.5),
+            transforms.RandomCrop((224,224)),
+            transforms.ToTensor(),
+            #transforms.Normalize(mean=[0.0],
+             #                    std=[0.3922])
+        ])
+        transform_test = transforms.Compose([
+            transforms.Resize((224,224)),
+            transforms.ToTensor(),#(H,W,C)转换为（C,H,W）,取值范围是0-1
+            #transforms.Normalize(mean=[0.0],
+            #                     std=[0.3922])
+        ])
+        trainset = MyDataset(root='G:/DataSet/LSD/', datatxt='train.txt',transform=transform_train)
+        train_loader = DataLoader(trainset, batch_size=256, shuffle=True)
+        testset = MyDataset(root='G:/DataSet/LSD/', datatxt='val.txt', transform=transform_test)
+        val_loader = DataLoader(testset, batch_size=256, shuffle=False,
+            num_workers=4, pin_memory=True)
+
     else:
         raise Exception('unknown dataset: {}'.format(args.dataset))
 
@@ -115,6 +175,12 @@ def main():
     elif args.net_type == 'pyramidnet':
         model = PYRM.PyramidNet(args.dataset, args.depth, args.alpha, numberofclass,
                                 args.bottleneck)
+
+    elif args.net_type == 'yolov5n':
+        cfg = 'E:/DLPROJTCT/CutMix-PyTorch-master/models/yolov5n_class.yaml'
+        #weights = 'E:/DLPROJTCT/CutMix-PyTorch-master/runs/TEST/model_best.pth.tar'
+        model = Model(cfg, ch=1, nc=2)
+        #model.load_state_dict(weights, strict=False)  # load
     else:
         raise Exception('unknown network architecture: {}'.format(args.net_type))
 
@@ -152,14 +218,35 @@ def validate(val_loader, model, criterion):
     model.eval()
 
     end = time.time()
-    for i, (input, target) in enumerate(val_loader):
+    for i, (input, target,paths) in enumerate(val_loader):
         target = target.cuda()
 
         output = model(input)
+        sm=nn.Softmax(dim=1)
+        cls_res=sm(output)
+        #print(cls_res[0])
+        #save result to txt
+        import numpy as np
+        a = np.array(cls_res.data.cpu())
+        t = np.array(target.data.cpu())
+        resulttxt_path='G:/DataSet/LSD/cutmix_result.txt'
+        with open(resulttxt_path, 'a+') as f:
+            id=0
+            for path in paths:
+                f.write((path + '\t' + str(a[id][0]) + '\t' + str(a[id][1]) + '\t' +str(t[id]) + '\n'))
+                if a[id][0]>a[id][1] and t[id]==1:
+                    with open('G:/DataSet/LSD/night2day.txt', 'a+') as f1:
+                        f1.write((path + '\t' + str(a[id][0]) + '\t' + str(a[id][1]) + '\t' + str(t[id]) + '\n'))
+                if a[id][0]<a[id][1] and t[id]==0:
+                    with open('G:/DataSet/LSD/day2night.txt', 'a+') as f2:
+                        f2.write((path + '\t' + str(a[id][0]) + '\t' + str(a[id][1]) + '\t' + str(t[id]) + '\n'))
+                id=id+1
+
+
         loss = criterion(output, target)
 
         # measure accuracy and record loss
-        err1, err5 = accuracy(output.data, target, topk=(1, 5))
+        err1, err5 = accuracy(output.data, target, topk=(1, 1))
 
         losses.update(loss.item(), input.size(0))
 

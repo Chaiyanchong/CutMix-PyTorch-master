@@ -203,9 +203,9 @@ def main():
             #                     std=[0.3922])
         ])
         trainset = MyDataset(root='G:/DataSet/LSD/', datatxt='train.txt',transform=transform_train)
-        train_loader = DataLoader(trainset, batch_size=256, shuffle=True)
+        train_loader = DataLoader(trainset, batch_size=256, shuffle=True,num_workers=args.workers, pin_memory=True)
         testset = MyDataset(root='G:/DataSet/LSD/', datatxt='val.txt', transform=transform_test)
-        val_loader = DataLoader(testset, batch_size=256, shuffle=True)
+        val_loader = DataLoader(testset, batch_size=256, shuffle=True,num_workers=args.workers, pin_memory=True)
     else:
         raise Exception('unknown dataset: {}'.format(args.dataset))
 
